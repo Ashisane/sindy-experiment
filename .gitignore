@@ -1,0 +1,6 @@
+.venv/
+output_c0/
+output_sim/
+*.dat
+
+__pycache__/
