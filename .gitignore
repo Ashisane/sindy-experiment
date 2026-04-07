@@ -4,3 +4,5 @@ output_sim/
 *.dat
 
 __pycache__/
+output_sweep/
+*.xml
