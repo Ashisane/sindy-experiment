@@ -6,3 +6,5 @@ output_sim/
 __pycache__/
 output_sweep/
 *.xml
+
+output_stages/
