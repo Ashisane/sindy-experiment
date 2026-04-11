@@ -1,355 +1,301 @@
-# -*- coding: utf-8 -*-
-"""
-this_inference.py  —  TASK D
-==============================
-THIS (Taylor-based Hypergraph Inference using SINDy) on D1 and D8 voltage traces.
-Infers pairwise edges and triadic hyperedges from c302 simulation data.
+﻿from __future__ import annotations
 
-Based on Delabays et al. 2025 formulation:
-  x_dot_i ≈ D(X) v_i  where D includes linear (x_j) and quadratic (x_j*x_k) terms
-  Nonzero v_i[x_j*x_k] → triadic hyperedge {i,j,k}
-"""
+import json
+from pathlib import Path
+from typing import Any
 
-import sys, os, json, re
 import numpy as np
-import matplotlib; matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+from pipeline_utils import OUT_C0, OUT_SIM, OUT_STAGES, locate_trace_file, neuron_to_class, parse_output_columns
 
-MDG_BUILD  = r"C:\Users\UTKARSH\Desktop\mdg\mdg_build"
-OUT_STAGES = os.path.join(MDG_BUILD, "output_stages")
-OUT_SIM    = os.path.join(MDG_BUILD, "output_sim")
 
-THIS_THRESH = 0.10   # STLSQ threshold for THIS
-ALPHA       = 0.01
-MAX_ITER    = 100
-DT_MS       = 0.05   # simulation dt in ms
-MAX_ACTIVE  = 60     # cap active neurons to keep quadratic library tractable
-N_NEAR_BASE = 2000   # sample points nearest to base point for THIS
-
-# Known circuit modules
-CIRCUIT_MODULES = {
-    "locomotion":     {"AVBL","AVBR","AVAL","AVAR","PVCL","PVCR",
-                       "DB1","DB2","DB3","DB4","DB5","DB6","DB7",
-                       "VB1","VB2","VB3","VB4","VB5","VB6","VB7","VB8","VB9","VB10","VB11"},
-    "mechanosensory": {"ALML","ALMR","PVDL","PVDR","PVCL","PVCR","PLML","PLMR"},
-    "chemosensory":   {"AWCL","AWCR","ASEL","ASER","AIAL","AIAR","AIBL","AIBR",
-                       "ASHL","ASHR","ADLL","ADLR"},
+THIS_THRESHOLD = 0.10
+ALPHA = 0.01
+MAX_ITER = 100
+N_NEAR_BASE = 1000
+MODULES = {
+    "locomotion": {"AVBL", "AVBR", "AVAL", "AVAR", "PVCL", "PVCR", "DB1", "DB2", "DB3", "DB4", "DB5", "DB6", "DB7", "VB1", "VB2", "VB3", "VB4", "VB5", "VB6", "VB7", "VB8", "VB9", "VB10", "VB11"},
+    "mechanosensory": {"ALML", "ALMR", "PVDL", "PVDR", "PVCL", "PVCR"},
+    "chemosensory": {"AWCL", "AWCR", "ASEL", "ASER", "AIAL", "AIAR", "AIBL", "AIBR"},
 }
 
-print("=" * 68)
-print("TASK D — THIS Hyperedge Inference on D1 and D8")
-print("=" * 68)
 
-# ── Load class membership and adjacency ───────────────────────────────────────
-with open(os.path.join(OUT_SIM, "class_members.json"), encoding="utf-8") as f:
-    class_members = json.load(f)
-with open(os.path.join(OUT_SIM, "class_names.txt"), encoding="utf-8") as f:
-    sorted_classes = [l.strip() for l in f if l.strip()]
-A_class   = np.load(os.path.join(OUT_SIM, "A_class.npy"))
-class_idx = {c: i for i, c in enumerate(sorted_classes)}
-
-def neuron_to_class(name):
-    n = name[:-1] if len(name) > 2 and name[-1].upper() in "LR" else name
-    n = re.sub(r"\d+$", "", n)
-    return n if n else "UNK"
-
-def classes_connected(n1, n2):
-    c1, c2 = neuron_to_class(n1), neuron_to_class(n2)
-    i1, i2 = class_idx.get(c1, -1), class_idx.get(c2, -1)
-    if i1 < 0 or i2 < 0:
-        return False
-    return A_class[i1, i2] > 0 or A_class[i2, i1] > 0
-
-
-# ── THIS utilities ────────────────────────────────────────────────────────────
-def ridge_solve(A, b, alpha=ALPHA):
-    M = A.T @ A + alpha * np.eye(A.shape[1])
+def ridge_solve(matrix: np.ndarray, target: np.ndarray) -> np.ndarray:
+    lhs = matrix.T @ matrix + ALPHA * np.eye(matrix.shape[1])
+    rhs = matrix.T @ target
     try:
-        return np.linalg.solve(M, A.T @ b)
+        return np.linalg.solve(lhs, rhs)
     except np.linalg.LinAlgError:
-        return np.linalg.lstsq(M, A.T @ b, rcond=None)[0]
+        return np.linalg.lstsq(lhs, rhs, rcond=None)[0]
 
-def stlsq(Theta, Y, tau):
-    n = Theta.shape[1]
-    xi = ridge_solve(Theta, Y)
+
+def stlsq(theta: np.ndarray, target: np.ndarray, threshold: float = THIS_THRESHOLD) -> np.ndarray:
+    xi = ridge_solve(theta, target)
     for _ in range(MAX_ITER):
-        active = np.abs(xi) >= tau
+        active = np.abs(xi) >= threshold
         if not active.any():
-            return np.zeros(n)
-        T_a = Theta[:, active]
-        xi_new = np.zeros(n)
-        xi_new[active] = ridge_solve(T_a, Y)
-        xi_new[np.abs(xi_new) < tau] = 0.0
-        if np.array_equal(xi_new != 0, xi != 0):
+            return np.zeros(theta.shape[1])
+        xi_new = np.zeros(theta.shape[1])
+        xi_new[active] = ridge_solve(theta[:, active], target)
+        xi_new[np.abs(xi_new) < threshold] = 0.0
+        if np.array_equal(xi_new != 0.0, xi != 0.0):
             return xi_new
         xi = xi_new
     return xi
 
 
-def run_this(dat_path, stage_tag, neuron_list):
-    """Run THIS algorithm on a voltage .dat file. Returns dict of results."""
-    print(f"\n  Loading {dat_path} ...")
-    if not os.path.exists(dat_path):
-        print(f"    File not found: {dat_path}")
-        return None
+def load_activation_data() -> dict[str, Any]:
+    activation_path = OUT_STAGES / "activation_data.json"
+    if activation_path.exists():
+        return json.loads(activation_path.read_text(encoding="utf-8"))
+    return {}
 
-    V   = np.loadtxt(dat_path)
-    Vmv = V[:, 1:] * 1000.0                  # (T, N)
-    T, N = Vmv.shape
-    N_neurons = min(N, len(neuron_list))
-    neuron_list = neuron_list[:N_neurons]
-    Vmv = Vmv[:, :N_neurons]
 
-    print(f"    Shape: {V.shape}  mV range: {Vmv.min():.1f} to {Vmv.max():.1f}")
+def stage_trace_paths(stage: int) -> tuple[Path | None, Path | None]:
+    activation_data = load_activation_data()
+    for row in activation_data.get("stages", []):
+        if int(row.get("stage", -1)) == stage and row.get("dat_path"):
+            dat_path = Path(row["dat_path"])
+            lems_path = Path(row["lems_path"]) if row.get("lems_path") else None
+            if dat_path.exists():
+                return dat_path, lems_path
 
-    # Select active neurons only
-    Vmax = Vmv.max(axis=0)
-    active_mask = Vmax > -20.0
-    n_active    = int(active_mask.sum())
-    print(f"    Active neurons (Vmax > -20mV): {n_active}/{N_neurons}")
+    stage_label = f"D{stage}"
+    dat_path = locate_trace_file(
+        OUT_STAGES / stage_label / f"Stage_{stage_label}_{activation_data.get('optimal_amp', 1.0)}pA.dat",
+        OUT_C0 / f"MDG_C0_{stage_label}.dat",
+        OUT_STAGES / stage_label / f"Stage_{stage_label}_1p0pA.dat",
+        Path(__file__).resolve().parent / f"MDG_C0_{stage_label}.dat",
+    )
+    lems_path = None
+    if dat_path is not None:
+        candidate_lems = dat_path.parent / f"LEMS_{dat_path.stem}.xml"
+        if candidate_lems.exists():
+            lems_path = candidate_lems
+    return dat_path, lems_path
 
-    if n_active < 3:
-        print(f"    Too few active neurons for THIS. Skipping.")
-        return {"n_active": n_active, "n_pairwise": 0, "n_triadic": 0, "error": "too_few_active"}
 
-    # Cap at MAX_ACTIVE for tractability
-    if n_active > MAX_ACTIVE:
-        top_idx = np.argsort(Vmax)[::-1][:MAX_ACTIVE]
-        active_mask = np.zeros(N_neurons, dtype=bool)
-        active_mask[top_idx] = True
-        n_active = MAX_ACTIVE
-        print(f"    Capped at {MAX_ACTIVE} most-active neurons for tractability")
+def build_neuron_order(stage: int, dat_path: Path, lems_path: Path | None) -> list[str]:
+    if lems_path is not None and lems_path.exists():
+        neuron_order = parse_output_columns(lems_path, dat_path.name)
+        if neuron_order:
+            return neuron_order
+    root_order = OUT_STAGES / f"neuron_order_D{stage}.txt"
+    if root_order.exists():
+        return [line.strip() for line in root_order.read_text(encoding="utf-8").splitlines() if line.strip()]
+    raise FileNotFoundError(f"Neuron order unavailable for D{stage}")
 
-    active_idx    = np.where(active_mask)[0]
-    active_neurons = [neuron_list[i] for i in active_idx]
-    X_active      = Vmv[:, active_idx]   # (T, n_active)
 
-    # THIS pre-processing
-    x0       = np.median(X_active, axis=0)          # base point = median
-    X_dev    = X_active - x0                        # deviations
-    X_std    = X_dev.std(axis=0)
-    X_std    = np.where(X_std < 1e-6, 1.0, X_std)
-    X_norm   = X_dev / X_std                        # normalized deviations
+def connected_pair(neuron_a: str, neuron_b: str, class_index: dict[str, int], adjacency: np.ndarray) -> bool:
+    class_a = class_index.get(neuron_to_class(neuron_a), -1)
+    class_b = class_index.get(neuron_to_class(neuron_b), -1)
+    if class_a < 0 or class_b < 0:
+        return False
+    return bool(adjacency[class_a, class_b] > 0 or adjacency[class_b, class_a] > 0)
 
-    # Sample points closest to base point (||X_dev||_2)
-    dist_to_base = np.linalg.norm(X_dev, axis=1)
-    near_idx     = np.argsort(dist_to_base)[:N_NEAR_BASE]
-    near_idx     = np.sort(near_idx)
-    X_s          = X_norm[near_idx, :]              # (N_near, n_active)
 
-    # Compute time derivative by central finite differences
-    # Only valid for near_idx points that are interior
-    interior = (near_idx > 0) & (near_idx < T - 1)
-    near_int = near_idx[interior]
+def consistent_module(neurons: tuple[str, str, str]) -> str | None:
+    triple = set(neurons)
+    for module_name, module_members in MODULES.items():
+        if triple.issubset(module_members):
+            return module_name
+    return None
 
-    Xdot_s = np.zeros((len(near_int), n_active))
-    for ti, t_abs in enumerate(near_int):
-        Xdot_s[ti, :] = (X_norm[t_abs + 1, :] - X_norm[t_abs - 1, :]) / (2 * DT_MS)
 
-    # Build monomial library D(X):
-    # Columns: [const, x_0, ..., x_{n-1}, x_i*x_j for connected (i,j)]
-    X_int = X_norm[near_int, :]   # (n_int, n_active)
-    n_int = len(near_int)
+def run_this(stage: int, dat_path: Path, neuron_order: list[str], class_index: dict[str, int], adjacency: np.ndarray) -> dict[str, Any]:
+    raw = np.loadtxt(dat_path)
+    time_s = raw[:, 0]
+    voltage_mv = raw[:, 1:] * 1000.0
+    dt_ms = float((time_s[1] - time_s[0]) * 1000.0)
+    neuron_order = neuron_order[: voltage_mv.shape[1]]
 
-    # Linear columns
-    lib_cols  = [np.ones(n_int)]
-    lib_names = ["const"]
-    for i in range(n_active):
-        lib_cols.append(X_int[:, i])
-        lib_names.append(active_neurons[i])
+    vmax = voltage_mv.max(axis=0)
+    active_indices = np.where(vmax > -20.0)[0]
+    active_neurons = [neuron_order[idx] for idx in active_indices]
+    active_voltage = voltage_mv[:, active_indices]
+    if len(active_neurons) < 3:
+        return {
+            "stage": f"D{stage}",
+            "dat_path": str(dat_path),
+            "active_neurons": active_neurons,
+            "n_active": len(active_neurons),
+            "n_pairwise_edges": 0,
+            "n_triadic_hyperedges": 0,
+            "pairwise_edges": [],
+            "triadic_hyperedges": [],
+            "stable_vs_other": {},
+            "incidence_neurons": active_neurons,
+            "incidence_shape": [len(active_neurons), 0],
+        }
 
-    # Quadratic columns (structurally connected pairs only)
-    quad_pairs = []
-    for i in range(n_active):
-        for j in range(i + 1, n_active):
-            if classes_connected(active_neurons[i], active_neurons[j]):
-                lib_cols.append(X_int[:, i] * X_int[:, j])
-                lib_names.append(f"{active_neurons[i]}*{active_neurons[j]}")
-                quad_pairs.append((i, j))
+    base_point = np.median(active_voltage, axis=0)
+    deviations = active_voltage - base_point
+    std = deviations.std(axis=0)
+    std[std < 1e-8] = 1.0
+    normalized = deviations / std
+    distances = np.linalg.norm(deviations, axis=1)
+    near_indices = np.sort(np.argsort(distances)[: min(N_NEAR_BASE, len(distances))])
+    interior = near_indices[(near_indices > 0) & (near_indices < len(time_s) - 1)]
+    sampled = normalized[interior, :]
+    derivatives = (normalized[interior + 1, :] - normalized[interior - 1, :]) / (2.0 * dt_ms)
 
-    Theta = np.column_stack(lib_cols)   # (n_int, n_lib)
-    n_lib = Theta.shape[1]
-    n_linear = 1 + n_active
-    print(f"    Library: {n_int} rows × {n_lib} cols  ({n_active} linear + {len(quad_pairs)} quadratic)")
+    library_columns = [np.ones(len(interior))]
+    library_terms = [("const", None)]
+    for neuron_name, column in zip(active_neurons, sampled.T):
+        library_columns.append(column)
+        library_terms.append(("linear", neuron_name))
 
-    # Run STLSQ for each active neuron
-    Xi = np.zeros((n_active, n_lib))
-    for i in range(n_active):
-        xi_i = stlsq(Theta, Xdot_s[:, i], THIS_THRESH)
-        Xi[i, :] = xi_i
+    quadratic_pairs: list[tuple[int, int]] = []
+    for idx_a in range(len(active_neurons)):
+        for idx_b in range(idx_a + 1, len(active_neurons)):
+            if connected_pair(active_neurons[idx_a], active_neurons[idx_b], class_index, adjacency):
+                quadratic_pairs.append((idx_a, idx_b))
+                library_columns.append(sampled[:, idx_a] * sampled[:, idx_b])
+                library_terms.append(("quadratic", (active_neurons[idx_a], active_neurons[idx_b])))
 
-    # Extract edges and hyperedges
-    pairwise_edges = []
-    triadic_hyperedges = []
+    theta = np.column_stack(library_columns)
+    coefficients = np.zeros((len(active_neurons), theta.shape[1]), dtype=float)
+    for target_idx in range(len(active_neurons)):
+        coefficients[target_idx] = stlsq(theta, derivatives[:, target_idx])
 
-    for i in range(n_active):
-        for j in range(1, n_linear):
-            if abs(Xi[i, j]) >= THIS_THRESH and j - 1 != i:
-                pairwise_edges.append((active_neurons[j-1], active_neurons[i], float(Xi[i, j])))
+    pairwise_edges: list[dict[str, Any]] = []
+    triadic_hyperedges: list[dict[str, Any]] = []
+    for target_idx, target_name in enumerate(active_neurons):
+        for term_idx, term in enumerate(library_terms[1:], start=1):
+            coef = float(coefficients[target_idx, term_idx])
+            if abs(coef) < THIS_THRESHOLD:
+                continue
+            if term[0] == "linear":
+                source_name = term[1]
+                if source_name != target_name:
+                    pairwise_edges.append({"source": source_name, "target": target_name, "coef": coef})
+            else:
+                src_a, src_b = term[1]
+                hyperedge_nodes = tuple(sorted((target_name, src_a, src_b)))
+                triadic_hyperedges.append(
+                    {
+                        "nodes": hyperedge_nodes,
+                        "target": target_name,
+                        "coef": coef,
+                        "module": consistent_module(hyperedge_nodes) or "random",
+                    }
+                )
 
-    for q_idx, (j_, k_) in enumerate(quad_pairs):
-        col_idx = n_linear + q_idx
-        for i in range(n_active):
-            if abs(Xi[i, col_idx]) >= THIS_THRESH:
-                triadic_hyperedges.append({
-                    "i": active_neurons[i],
-                    "j": active_neurons[j_],
-                    "k": active_neurons[k_],
-                    "coef": float(Xi[i, col_idx])
-                })
+    unique_hyperedges: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for edge in triadic_hyperedges:
+        key = edge["nodes"]
+        existing = unique_hyperedges.get(key)
+        if existing is None or abs(edge["coef"]) > abs(existing["coef"]):
+            unique_hyperedges[key] = edge
 
-    print(f"    Pairwise edges:     {len(pairwise_edges)}")
-    print(f"    Triadic hyperedges: {len(triadic_hyperedges)}")
+    sorted_hyperedges = sorted(unique_hyperedges.values(), key=lambda item: abs(item["coef"]), reverse=True)
+    incidence = np.zeros((len(active_neurons), len(sorted_hyperedges)), dtype=np.int8)
+    neuron_index = {name: idx for idx, name in enumerate(active_neurons)}
+    for column_idx, edge in enumerate(sorted_hyperedges):
+        for neuron_name in edge["nodes"]:
+            incidence[neuron_index[neuron_name], column_idx] = 1
 
-    # Circuit consistency check
-    circuit_consistent = 0
-    for h in triadic_hyperedges:
-        neurons = {h["i"], h["j"], h["k"]}
-        for module_name, module_set in CIRCUIT_MODULES.items():
-            if len(neurons & module_set) >= 2:
-                circuit_consistent += 1
-                h["circuit"] = module_name
-                break
-        else:
-            h["circuit"] = "unknown"
-
-    print(f"    Circuit-consistent triadic: {circuit_consistent}/{len(triadic_hyperedges)}")
-
+    circuit_consistent = sum(1 for edge in sorted_hyperedges if edge["module"] != "random")
     return {
-        "stage": stage_tag,
-        "n_active": n_active,
+        "stage": f"D{stage}",
+        "dat_path": str(dat_path),
         "active_neurons": active_neurons,
-        "n_pairwise": len(pairwise_edges),
-        "n_triadic": len(triadic_hyperedges),
+        "n_active": len(active_neurons),
+        "n_pairwise_edges": len(pairwise_edges),
+        "n_triadic_hyperedges": len(sorted_hyperedges),
         "n_circuit_consistent": circuit_consistent,
-        "pairwise_edges": pairwise_edges[:50],    # top 50
-        "triadic_hyperedges": triadic_hyperedges[:30],
-        "Xi": Xi.tolist(),
+        "pairwise_edges": pairwise_edges,
+        "triadic_hyperedges": sorted_hyperedges,
+        "incidence_matrix": incidence,
+        "incidence_neurons": active_neurons,
+        "incidence_shape": list(incidence.shape),
+        "quadratic_pair_count": len(quadratic_pairs),
     }
 
 
-# ── Find D1 and D8 .dat files ─────────────────────────────────────────────────
-def find_dat(stage_label):
-    """Try task B stages first, then fall back to 20pA sims."""
-    candidates = []
-    # Task B outputs
-    d = os.path.join(OUT_STAGES, stage_label)
-    for f in os.listdir(d) if os.path.isdir(d) else []:
-        if f.endswith(".dat") and "activity" not in f:
-            candidates.append(os.path.join(d, f))
-    # 20pA sims in mdg_build
-    for f in os.listdir(MDG_BUILD):
-        if f.endswith(".dat") and "activity" not in f and stage_label.lower() in f.lower():
-            candidates.append(os.path.join(MDG_BUILD, f))
-    # output_c0
-    for f in os.listdir(os.path.join(MDG_BUILD, "output_c0")):
-        if f.endswith(".dat") and "activity" not in f and stage_label.lower() in f.lower():
-            candidates.append(os.path.join(MDG_BUILD, "output_c0", f))
-    return candidates[0] if candidates else None
+print("=" * 72)
+print("TASK D: THIS HYPEREDGE INFERENCE")
+print("=" * 72)
 
+class_names = [line.strip() for line in (OUT_SIM / "class_names.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
+class_index = {name: idx for idx, name in enumerate(class_names)}
+adjacency = np.load(OUT_SIM / "A_class.npy")
 
-def load_neuron_order(stage_num):
-    d   = os.path.join(OUT_STAGES, f"D{stage_num}")
-    txt = os.path.join(d, f"neuron_order_D{stage_num}.txt")
-    if os.path.exists(txt):
-        with open(txt) as f:
-            return [l.strip() for l in f if l.strip()]
-    # fallback: try LEMS file column extraction
-    return [f"neuron_{i}" for i in range(250)]
+results: dict[int, dict[str, Any]] = {}
+for stage in (1, 8):
+    dat_path, lems_path = stage_trace_paths(stage)
+    if dat_path is None:
+        raise FileNotFoundError(f"No voltage trace found for D{stage}")
+    neuron_order = build_neuron_order(stage, dat_path, lems_path)
+    print(f"Running THIS on D{stage}: {dat_path}")
+    result = run_this(stage, dat_path, neuron_order, class_index, adjacency)
+    results[stage] = result
+    incidence_path = OUT_STAGES / f"THIS_D{stage}_incidence.npy"
+    np.save(incidence_path, result["incidence_matrix"])
+    (OUT_STAGES / f"THIS_D{stage}_active_neurons.txt").write_text(
+        "\n".join(result["incidence_neurons"]) + "\n",
+        encoding="utf-8",
+    )
+    print(
+        f"  D{stage}: active={result['n_active']} | pairwise={result['n_pairwise_edges']} | "
+        f"triadic={result['n_triadic_hyperedges']} | circuit-consistent={result['n_circuit_consistent']}"
+    )
 
+hyperedges_d1 = {tuple(edge["nodes"]) for edge in results[1]["triadic_hyperedges"]}
+hyperedges_d8 = {tuple(edge["nodes"]) for edge in results[8]["triadic_hyperedges"]}
+stable = sorted(hyperedges_d1 & hyperedges_d8)
+novel_d8 = sorted(hyperedges_d8 - hyperedges_d1)
 
-# Use 20pA D1 and D8 traces (already available) as fallback
-D1_DAT  = os.path.join(MDG_BUILD, "MDG_C0_D1.dat")
-D8_DAT  = os.path.join(MDG_BUILD, "MDG_C0_D8.dat")
+report_lines = [
+    "# THIS Hyperedge Inference",
+    "",
+    "## D1 vs D8 summary",
+    "",
+    "| Stage | Active neurons | Pairwise edges | Triadic hyperedges | Circuit-consistent |",
+    "|---|---|---|---|---|",
+]
+for stage in (1, 8):
+    result = results[stage]
+    report_lines.append(
+        f"| D{stage} | {result['n_active']} | {result['n_pairwise_edges']} | {result['n_triadic_hyperedges']} | {result['n_circuit_consistent']} |"
+    )
+report_lines.extend(
+    [
+        "",
+        f"Stable hyperedges across D1 and D8: **{len(stable)}**",
+        f"Novel D8 hyperedges: **{len(novel_d8)}**",
+        "",
+        "## Top D8 triadic hyperedges",
+        "",
+        "| Nodes | Coefficient | Module flag |",
+        "|---|---|---|",
+    ]
+)
+for edge in results[8]["triadic_hyperedges"][:20]:
+    nodes = ", ".join(edge["nodes"])
+    report_lines.append(f"| {nodes} | {edge['coef']:+.4f} | {edge['module']} |")
+report_lines.extend(["", "## Stable hyperedges", ""])
+if stable:
+    for nodes in stable[:20]:
+        report_lines.append(f"- {', '.join(nodes)}")
+else:
+    report_lines.append("No stable hyperedges identified.")
+report_lines.extend(["", "## Novel adult D8 hyperedges", ""])
+if novel_d8:
+    for nodes in novel_d8[:20]:
+        report_lines.append(f"- {', '.join(nodes)}")
+else:
+    report_lines.append("No adult-specific D8 hyperedges identified.")
+report_path = OUT_STAGES / "THIS_report.md"
+report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
 
-# Try to get neuron orders from LEMS files
-def neuron_order_from_lems(lems_path, fallback_n=200):
-    neurons = []
-    if not os.path.exists(lems_path):
-        return [f"n_{i}" for i in range(fallback_n)]
-    with open(lems_path, encoding="utf-8") as f:
-        for line in f:
-            if "OutputColumn" in line or "outputColumn" in line:
-                import re
-                m = re.search(r'id=["\']([^"\']+)["\']', line)
-                if m:
-                    n = m.group(1).replace("_v", "").replace("Pop_", "")
-                    neurons.append(n)
-    return neurons if neurons else [f"n_{i}" for i in range(fallback_n)]
+serializable_results = {}
+for stage, result in results.items():
+    serializable = {key: value for key, value in result.items() if key != "incidence_matrix"}
+    serializable_results[f"D{stage}"] = serializable
+(OUT_STAGES / "THIS_results.json").write_text(json.dumps(serializable_results, indent=2), encoding="utf-8")
 
-neurons_d1 = neuron_order_from_lems(
-    os.path.join(MDG_BUILD, "output_c0", "LEMS_MDG_C0_D1.xml"))
-neurons_d8 = neuron_order_from_lems(
-    os.path.join(MDG_BUILD, "output_c0", "LEMS_MDG_C0_D8.xml"))
-
-print(f"\n  D1 neuron order: {len(neurons_d1)} neurons from LEMS")
-print(f"  D8 neuron order: {len(neurons_d8)} neurons from LEMS")
-
-results_d1 = run_this(D1_DAT, "D1", neurons_d1)
-results_d8 = run_this(D8_DAT, "D8", neurons_d8)
-
-
-# ── Compare D1 vs D8 ──────────────────────────────────────────────────────────
-print("\n" + "=" * 68)
-print("D1 vs D8 HYPEREDGE COMPARISON")
-print("=" * 68)
-for tag, r in [("D1", results_d1), ("D8", results_d8)]:
-    if r:
-        print(f"  {tag}: {r['n_active']} active | "
-              f"{r['n_pairwise']} pairwise edges | "
-              f"{r['n_triadic']} triadic hyperedges | "
-              f"{r['n_circuit_consistent']} circuit-consistent")
-
-if results_d1 and results_d8 and not results_d1.get("error") and not results_d8.get("error"):
-    n1, n8 = results_d1["n_triadic"], results_d8["n_triadic"]
-    if n8 > n1:
-        print(f"\n  MORE triadic hyperedges in adult (D8={n8}) vs hatchling (D1={n1})")
-        print(f"  Developmental hyperedge gain: +{n8-n1}")
-    elif n8 == n1:
-        print(f"\n  Same number of triadic hyperedges D1 vs D8 ({n1})")
-    else:
-        print(f"\n  FEWER triadic hyperedges in adult (D8={n8}) vs hatchling (D1={n1})")
-        print(f"  (Possible: stronger inhibitory pruning in adult)")
-
-    # Stable hyperedges (in both)
-    if results_d1.get("triadic_hyperedges") and results_d8.get("triadic_hyperedges"):
-        h1_set = {frozenset([h["i"], h["j"], h["k"]]) for h in results_d1["triadic_hyperedges"]}
-        h8_set = {frozenset([h["i"], h["j"], h["k"]]) for h in results_d8["triadic_hyperedges"]}
-        stable  = h1_set & h8_set
-        novel_d8 = h8_set - h1_set
-        print(f"  Stable hyperedges (D1 AND D8): {len(stable)}")
-        print(f"  Novel in D8 (adult-specific):  {len(novel_d8)}")
-        if novel_d8:
-            print(f"  First 5 adult-specific: {list(novel_d8)[:5]}")
-
-
-# ── Save ──────────────────────────────────────────────────────────────────────
-os.makedirs(OUT_STAGES, exist_ok=True)
-with open(os.path.join(OUT_STAGES, "THIS_report.md"), "w", encoding="utf-8") as f:
-    f.write("# THIS Hyperedge Inference — D1 vs D8\n\n")
-    for tag, r in [("D1", results_d1), ("D8", results_d8)]:
-        if not r:
-            continue
-        f.write(f"## {tag}\n")
-        f.write(f"- Active neurons: {r['n_active']}\n")
-        f.write(f"- Pairwise edges: {r['n_pairwise']}\n")
-        f.write(f"- Triadic hyperedges: {r['n_triadic']}\n")
-        f.write(f"- Circuit-consistent triads: {r['n_circuit_consistent']}\n\n")
-        if r.get("triadic_hyperedges"):
-            f.write("### Top triadic hyperedges\n\n| i | j | k | coef | circuit |\n|---|---|---|---|---|\n")
-            for h in r["triadic_hyperedges"][:10]:
-                f.write(f"| {h['i']} | {h['j']} | {h['k']} | {h['coef']:+.4f} | {h.get('circuit','?')} |\n")
-            f.write("\n")
-
-for tag, r_data, fname in [("D1", results_d1, "THIS_D1_results.json"),
-                             ("D8", results_d8, "THIS_D8_results.json")]:
-    if r_data:
-        save = {k: v for k, v in r_data.items() if k != "Xi"}
-        with open(os.path.join(OUT_STAGES, fname), "w", encoding="utf-8") as f:
-            json.dump(save, f, indent=2)
-
-print(f"\n  Saved THIS_report.md, THIS_D1_results.json, THIS_D8_results.json")
-print("\n=== TASK D COMPLETE ===")
+print(f"Stable hyperedges: {len(stable)}")
+print(f"Novel D8 hyperedges: {len(novel_d8)}")
+print(f"Saved {report_path}")
+print("=== TASK D COMPLETE ===")
