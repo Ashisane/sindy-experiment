@@ -1,4 +1,4 @@
-"""
+﻿"""
 witvliet_reader.py
 ------------------
 c302-compatible connectome data reader for the Witvliet et al. 2021 (Nature)
@@ -10,7 +10,7 @@ Implements the interface expected by c302:
 
 Supports 8 developmental stages (stage=1 through stage=8).
 
-Chemical synapses — number field:
+Chemical synapses â€” number field:
     c302 uses 'number' as a raw synapse contact count.  The JSON stores
     individual contacts keyed by vast_id.  We aggregate (pre, post) pairs
     and count the number of distinct contacts (vast_ids), identical to how
@@ -20,8 +20,8 @@ Chemical synapses — number field:
     downstream strength analysis, but is NOT passed into ConnectionInfo
     (which would break c302 compatibility).
 
-Gap junctions — deduplicate + one direction only:
-    The JSON file stores each physical contact twice (n1→n2 and n2→n1).
+Gap junctions â€” deduplicate + one direction only:
+    The JSON file stores each physical contact twice (n1â†’n2 and n2â†’n1).
     We keep the first occurrence per catmaid_id.  c302 treats GapJunctions
     as bidirectional internally.
 
@@ -34,7 +34,7 @@ import os
 
 from c302.ConnectomeReader import ConnectionInfo, PREFERRED_NEURON_NAMES
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # Absolute path so this module works whether imported from mdg_build/ or
 # from inside the c302 package directory (where it gets copied at runtime).
@@ -66,7 +66,7 @@ def _synclass(pre: str) -> str:
     return "Acetylcholine"
 
 
-# ── Main reader class ─────────────────────────────────────────────────────────
+# â”€â”€ Main reader class â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class WitvlietDataReader:
@@ -78,7 +78,7 @@ class WitvlietDataReader:
     Parameters
     ----------
     stage : int
-        Dataset index, 1–8 inclusive (default 1).
+        Dataset index, 1â€“8 inclusive (default 1).
     """
 
     def __init__(self, stage: int = 1):
@@ -88,7 +88,7 @@ class WitvlietDataReader:
         self._syn_file = os.path.join(DATA_DIR, f"Dataset{stage}_synapses.json")
         self._gj_file  = os.path.join(DATA_DIR, f"Dataset{stage}_gapjunctions.json")
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def read_data(self, include_nonconnected_cells: bool = False):
         """
@@ -109,7 +109,7 @@ class WitvlietDataReader:
         cells       = set()
         n_filtered  = 0
 
-        # ── Chemical synapses ─────────────────────────────────────────────────
+        # â”€â”€ Chemical synapses â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Aggregate contacts per (pre, post) pair.
         # pair_count[pair]  = number of distinct vast_id contacts
         # pair_size[pair]   = total weighted nm^3 (informational only)
@@ -123,8 +123,10 @@ class WitvlietDataReader:
         for entry in synapses:
             pre     = entry["pre"]
             posts   = entry["post"]
-            weights = entry["post_weights"]
-            size    = entry["size"]
+            weights = entry.get("post_weights") or [1] * len(posts)
+            if len(weights) != len(posts):
+                weights = [1] * len(posts)
+            size    = entry.get("size", 0.0)
 
             for post_cell, weight in zip(posts, weights):
                 if pre not in _PREFERRED or post_cell not in _PREFERRED:
@@ -145,7 +147,7 @@ class WitvlietDataReader:
                 ConnectionInfo(pre, post_cell, count, "Send", pair_class[pair])
             )
 
-        # ── Gap junctions ─────────────────────────────────────────────────────
+        # â”€â”€ Gap junctions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Keep first occurrence per catmaid_id (file stores both directions).
         gj_conns       = []
         seen_catmaid   = set()
@@ -198,37 +200,46 @@ class WitvlietDataReader:
         return [], [], []
 
 
-# ── Module-level convenience functions (required by c302 reader convention) ───
+# â”€â”€ Module-level convenience functions (required by c302 reader convention) â”€â”€â”€
 
 _DEFAULT_STAGE = 1
 _instance: WitvlietDataReader | None = None
 
 
-def get_instance(stage: int = _DEFAULT_STAGE) -> WitvlietDataReader:
-    """Return (and cache) a module-level WitvlietDataReader instance."""
-    global _instance
+def set_stage(stage: int) -> WitvlietDataReader:
+    """Set the module default stage and refresh the cached reader."""
+    global _DEFAULT_STAGE, _instance
+    if stage not in range(1, 9):
+        raise ValueError(f"stage must be between 1 and 8, got {stage}")
+    _DEFAULT_STAGE = stage
     if _instance is None or _instance.stage != stage:
         _instance = WitvlietDataReader(stage=stage)
     return _instance
 
 
-def read_data(include_nonconnected_cells: bool = False):
-    """Module-level wrapper — delegates to the default-stage instance."""
-    return get_instance().read_data(
+def get_instance(stage: int | None = None) -> WitvlietDataReader:
+    """Return (and cache) a module-level WitvlietDataReader instance."""
+    global _instance
+    stage = _DEFAULT_STAGE if stage is None else stage
+    if _instance is None or _instance.stage != stage:
+        _instance = WitvlietDataReader(stage=stage)
+    return _instance
+
+
+def read_data(include_nonconnected_cells: bool = False, stage: int | None = None):
+    """Module-level wrapper for the currently selected stage."""
+    return get_instance(stage=stage).read_data(
         include_nonconnected_cells=include_nonconnected_cells
     )
 
 
-def read_muscle_data():
+def read_muscle_data(stage: int | None = None):
     """Module-level wrapper — always returns empty muscle data."""
-    return get_instance().read_muscle_data()
-
-
-# ── Standalone test ───────────────────────────────────────────────────────────
+    return get_instance(stage=stage).read_muscle_data()
 
 if __name__ == "__main__":
     print("=" * 65)
-    print("WitvlietDataReader — standalone test")
+    print("WitvlietDataReader â€” standalone test")
     print("=" * 65)
 
     results = {}
@@ -262,3 +273,5 @@ if __name__ == "__main__":
     print(f"Stage 1  neurons={s1[0]}  chem={s1[1]}  gj={s1[2]}  {'[OK]' if ok1 else '[WARN: outside 140-165]'}")
     print(f"Stage 8  neurons={s8[0]}  chem={s8[1]}  gj={s8[2]}  {'[OK - more than stage 1]' if ok8 else '[WARN: not more than stage 1]'}")
     print("=" * 65)
+
+
