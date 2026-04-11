@@ -1,227 +1,194 @@
-# -*- coding: utf-8 -*-
-"""
-amplitude_sweep.py  —  TASK A
-==============================
-Find the developmental sensitivity window: the stimulation amplitude at which
-D8 (adult, denser connectome) activates more neurons than D1 (hatchling).
+﻿from __future__ import annotations
 
-Amplitudes tested: [0.2, 0.5, 1.0, 2.0, 5.0] pA
-For each amplitude: run D1, parse voltage, run D8, parse voltage.
-Key output: sweep_results.json and sweep_plot.png
-"""
+import json
+from pathlib import Path
 
-import sys, os, json, shutil, time
-import numpy as np
-import matplotlib; matplotlib.use("Agg")
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 
-sys.path.insert(0, r"C:\Users\UTKARSH\Desktop\mdg\c302")
-sys.path.insert(0, r"C:\Users\UTKARSH\Desktop\mdg\mdg_build")
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
-from c302 import parameters_C0
-from pyneuroml import pynml
-import c302
-import witvliet_reader as wr
-
-MDG_BUILD  = r"C:\Users\UTKARSH\Desktop\mdg\mdg_build"
-OUT_SWEEP  = os.path.join(MDG_BUILD, "output_sweep")
-os.makedirs(OUT_SWEEP, exist_ok=True)
-
-AMPLITUDES    = [0.2, 0.5, 1.0, 2.0, 5.0]
-STIM_NEURONS  = ["AVBL", "AVBR", "AVAL", "AVAR", "PVCL", "PVCR"]
-FIRED_THRESH  = -20.0  # mV
-DURATION      = 500
-DT            = 0.05
-
-print("=" * 68)
-print("TASK A — AMPLITUDE SWEEP (Parameters C0, D1 vs D8)")
-print("=" * 68)
-print(f"  Amplitudes: {AMPLITUDES} pA")
-print(f"  Stimulated: {STIM_NEURONS}")
-print(f"  Threshold for 'fired': Vmax > {FIRED_THRESH} mV\n")
+from pipeline_utils import (
+    FIRED_THRESHOLD_MV,
+    OUT_SWEEP,
+    STIM_NEURONS,
+    amp_to_tag,
+    ensure_directory,
+    load_stage_cells,
+    run_stage_simulation,
+)
 
 
-def amp_str(amp):
-    return str(amp).replace(".", "p")
+AMPLITUDES = [0.2, 0.5, 1.0, 2.0, 5.0]
+DURATION_MS = 500.0
+DT_MS = 0.05
 
 
-def run_stage(amp, stage):
-    """Generate NeuroML, run jNeuroML, parse .dat. Returns (n_total, n_fired, v_max)."""
-    params = parameters_C0.ParameterisedModel()
-    params.set_bioparameter("unphysiological_offset_current",
-                            f"{amp} pA", "sweep", "0")
-    params.set_bioparameter("unphysiological_offset_current_del",
-                            "50 ms", "sweep", "0")
-    params.set_bioparameter("unphysiological_offset_current_dur",
-                            "400 ms", "sweep", "0")
-
-    wr._DEFAULT_STAGE = stage
-    wr._instance = None
-    cells, _ = wr.read_data(include_nonconnected_cells=False)
-    stim = [c for c in STIM_NEURONS if c in cells]
-
-    net_id = f"Sweep_D{stage}_{amp_str(amp)}pA"
-    lems   = os.path.join(OUT_SWEEP, f"LEMS_{net_id}.xml")
-
-    c302.generate(
-        net_id, params,
-        data_reader="witvliet_reader",
-        cells=cells,
-        cells_to_stimulate=stim,
-        cells_to_plot=cells,
-        duration=DURATION, dt=DT,
-        target_directory=OUT_SWEEP,
+def run_one(stage: int, amplitude_pa: float) -> dict:
+    net_id = f"Sweep_D{stage}_{amp_to_tag(amplitude_pa)}pA"
+    result = run_stage_simulation(
+        stage,
+        amplitude_pa,
+        net_id,
+        OUT_SWEEP,
+        duration_ms=DURATION_MS,
+        dt_ms=DT_MS,
+        cells_to_stimulate=STIM_NEURONS,
+        source_tag="task_a_sweep",
+        reuse_existing=True,
         verbose=False,
     )
-
-    ok = pynml.run_lems_with_jneuroml(
-        lems, max_memory="4G", nogui=True, plot=False, verbose=False)
-
-    # jNeuroML writes .dat to CWD — move it to output_sweep
-    dat_cwd = os.path.join(MDG_BUILD, f"{net_id}.dat")
-    dat_dst = os.path.join(OUT_SWEEP, f"{net_id}.dat")
-    if os.path.exists(dat_cwd):
-        shutil.move(dat_cwd, dat_dst)
-        # Also move activity.dat if exists
-        act_cwd = os.path.join(MDG_BUILD, f"{net_id}.activity.dat")
-        if os.path.exists(act_cwd):
-            shutil.move(act_cwd, os.path.join(OUT_SWEEP, f"{net_id}.activity.dat"))
-
-    if not os.path.exists(dat_dst):
-        print(f"    ERROR: {dat_dst} not found — sim may have failed")
-        return len(cells), 0, 0.0
-
-    V    = np.loadtxt(dat_dst)
-    Vmv  = V[:, 1:] * 1000.0
-    Vmax = Vmv.max(axis=0)
-
-    n_fired = int((Vmax > FIRED_THRESH).sum())
-    n_total = Vmv.shape[1]
-    vpc     = float(Vmax.max())
-    return n_total, n_fired, vpc
+    payload = {
+        "stage": stage,
+        "net_id": net_id,
+        "dat_path": result.dat_path,
+        "lems_path": result.lems_path,
+        "reused_existing": result.reused_existing,
+        "jneuroml_ok": result.jneuroml_ok,
+    }
+    payload.update(result.summary)
+    return payload
 
 
-# ── Main sweep loop ────────────────────────────────────────────────────────────
-results = []
-t_sweep = time.time()
+ensure_directory(OUT_SWEEP)
+expected_counts = {stage: len(load_stage_cells(stage)) for stage in (1, 8)}
 
-for amp in AMPLITUDES:
-    print(f"\n{'─'*60}")
-    print(f"  Amplitude: {amp} pA")
-    print(f"{'─'*60}")
+print("=" * 72)
+print("TASK A: AMPLITUDE SWEEP - DEVELOPMENTAL SENSITIVITY WINDOW")
+print("=" * 72)
+print(f"Stimulated neurons: {STIM_NEURONS}")
+print(f"Fired threshold: Vmax > {FIRED_THRESHOLD_MV} mV")
+print(f"Expected neurons: D1={expected_counts[1]}, D8={expected_counts[8]}")
 
-    # D1
-    t0 = time.time()
-    print(f"  [D1] Generating + running ...")
-    try:
-        n1, fired1, vmax1 = run_stage(amp, 1)
-        ok1 = True
-    except Exception as e:
-        print(f"  [D1] FAILED: {e}")
-        n1, fired1, vmax1, ok1 = 161, 0, 0.0, False
-    print(f"  [D1] {fired1}/{n1} fired  Vmax={vmax1:.1f}mV  ({time.time()-t0:.0f}s)")
+results: list[dict] = []
+failed_amps: list[dict] = []
+all_silent_at_floor = False
 
-    # D8
-    t0 = time.time()
-    print(f"  [D8] Generating + running ...")
-    try:
-        n8, fired8, vmax8 = run_stage(amp, 8)
-        ok8 = True
-    except Exception as e:
-        print(f"  [D8] FAILED: {e}")
-        n8, fired8, vmax8, ok8 = 180, 0, 0.0, False
-    print(f"  [D8] {fired8}/{n8} fired  Vmax={vmax8:.1f}mV  ({time.time()-t0:.0f}s)")
+for amplitude_pa in AMPLITUDES:
+    print("-" * 72)
+    print(f"Running amplitude {amplitude_pa} pA")
+    row = {"amp": amplitude_pa}
 
-    diff = fired8 - fired1
-    pct1  = fired1 / n1 * 100 if n1 > 0 else 0
-    pct8  = fired8 / n8 * 100 if n8 > 0 else 0
-    print(f"\n  >> amp={amp}pA | D1: {fired1}/{n1} ({pct1:.0f}%) | "
-          f"D8: {fired8}/{n8} ({pct8:.0f}%) | diff: {diff:+d}")
+    for stage in (1, 8):
+        label = f"D{stage}"
+        try:
+            stage_result = run_one(stage, amplitude_pa)
+            row[f"{label.lower()}_result"] = stage_result
+        except Exception as exc:
+            stage_result = {
+                "stage": stage,
+                "net_id": f"Sweep_D{stage}_{amp_to_tag(amplitude_pa)}pA",
+                "dat_path": str(OUT_SWEEP / f"Sweep_D{stage}_{amp_to_tag(amplitude_pa)}pA.dat"),
+                "lems_path": str(OUT_SWEEP / f"LEMS_Sweep_D{stage}_{amp_to_tag(amplitude_pa)}pA.xml"),
+                "reused_existing": False,
+                "jneuroml_ok": False,
+                "error": str(exc),
+                "n_timesteps": 0,
+                "n_neurons": expected_counts[stage],
+                "dt_ms": DT_MS,
+                "min_voltage_mv": float("nan"),
+                "max_voltage_mv": float("nan"),
+                "fired": 0,
+                "subthreshold": 0,
+                "silent": expected_counts[stage],
+            }
+            row[f"{label.lower()}_result"] = stage_result
+            failed_amps.append({"amp": amplitude_pa, "stage": stage, "error": str(exc)})
+            print(f"  {label} FAILED: {exc}")
 
-    results.append({
-        "amp": amp,
-        "n_d1": n1, "fired_d1": fired1, "pct_d1": round(pct1, 1),
-        "n_d8": n8, "fired_d8": fired8, "pct_d8": round(pct8, 1),
-        "diff": diff,
-        "ok_d1": ok1, "ok_d8": ok8,
-    })
+    d1 = row["d1_result"]
+    d8 = row["d8_result"]
+    diff = int(d8["fired"] - d1["fired"])
+    row["n_d1"] = int(d1["fired"])
+    row["n_d8"] = int(d8["fired"])
+    row["diff"] = diff
+    row["d1_pct"] = round(100.0 * d1["fired"] / max(1, d1["n_neurons"]), 2)
+    row["d8_pct"] = round(100.0 * d8["fired"] / max(1, d8["n_neurons"]), 2)
 
-print(f"\n{'='*68}")
-print(f"  Total sweep time: {(time.time()-t_sweep)/60:.1f} min")
-print(f"{'='*68}")
+    print(
+        f"amp={amplitude_pa}pA | D1: {d1['fired']}/{d1['n_neurons']} fired | "
+        f"D8: {d8['fired']}/{d8['n_neurons']} fired | diff: {diff}"
+    )
+    print(
+        f"  D1 detail: subthreshold={d1['subthreshold']}, silent={d1['silent']}, "
+        f"reused={d1['reused_existing']}"
+    )
+    print(
+        f"  D8 detail: subthreshold={d8['subthreshold']}, silent={d8['silent']}, "
+        f"reused={d8['reused_existing']}"
+    )
 
-# ── Find sensitivity window ────────────────────────────────────────────────────
-print("\n  SENSITIVITY WINDOW ANALYSIS:")
-print(f"  {'Amp':>6}  {'D1%':>6}  {'D8%':>6}  {'Diff':>6}  {'In range?'}")
-in_range = []
-for r in results:
-    in_range_flag = (10 <= r["pct_d1"] <= 70) and (r["diff"] > 0)
-    print(f"  {r['amp']:>6.1f}  {r['pct_d1']:>6.1f}  {r['pct_d8']:>6.1f}  "
-          f"{r['diff']:>+6}  {'YES' if in_range_flag else ''}")
-    if in_range_flag:
-        in_range.append(r)
+    if amplitude_pa == 0.2 and (d1["fired"] == 0 and d8["fired"] == 0):
+        all_silent_at_floor = True
+        print("  NOTE: 0.2 pA produced all-silent output across both stages.")
 
-if in_range:
-    best = max(in_range, key=lambda x: x["diff"])
-    print(f"\n  OPTIMAL AMPLITUDE: {best['amp']} pA")
-    print(f"    D1: {best['fired_d1']}/{best['n_d1']} ({best['pct_d1']:.0f}%)")
-    print(f"    D8: {best['fired_d8']}/{best['n_d8']} ({best['pct_d8']:.0f}%)")
-    print(f"    Developmental contrast: +{best['diff']} neurons")
+    results.append(row)
+
+successful = [
+    row for row in results
+    if "error" not in row["d1_result"] and "error" not in row["d8_result"]
+]
+window_candidates = [row for row in successful if row["diff"] > 0]
+if window_candidates:
+    best = max(window_candidates, key=lambda item: (item["diff"], -abs(item["d1_pct"] - 40.0)))
+    sensitivity_note = (
+        f"Sensitivity window identified at {best['amp']} pA: "
+        f"D8 exceeds D1 by {best['diff']} fired neurons."
+    )
+elif successful:
+    best = next((row for row in successful if row["amp"] == 1.0), successful[0])
+    sensitivity_note = (
+        "Sweep was inconclusive because no amplitude produced D8 > D1. "
+        f"Defaulting to {best['amp']} pA for Task B."
+    )
 else:
-    # Pick the lowest amplitude that worked
-    worked = [r for r in results if r["ok_d1"] and r["ok_d8"] and r["fired_d1"] > 0]
-    if worked:
-        best = min(worked, key=lambda x: x["amp"])
-        print(f"\n  No clear sensitivity window found.")
-        print(f"  Using lowest working amplitude: {best['amp']} pA as default for Task B")
-    else:
-        best = {"amp": 1.0}
-        print(f"\n  All simulations silent or failed. Defaulting to 1.0 pA for Task B.")
+    best = {"amp": 1.0}
+    sensitivity_note = "All amplitudes failed. Defaulting to 1.0 pA for Task B."
 
-# ── Save results ───────────────────────────────────────────────────────────────
-sweep_out = os.path.join(OUT_SWEEP, "sweep_results.json")
-with open(sweep_out, "w", encoding="utf-8") as f:
-    json.dump({"results": results, "optimal_amp": best["amp"]}, f, indent=2)
-print(f"\n  Saved {sweep_out}")
+if all_silent_at_floor:
+    sensitivity_note += " 0.2 pA is below the usable floor for this setup."
 
-# ── Plot ─────────────────────────────────────────────────────────────────────
-amps  = [r["amp"] for r in results]
-d1s   = [r["pct_d1"] for r in results]
-d8s   = [r["pct_d8"] for r in results]
+print("=" * 72)
+print("SENSITIVITY WINDOW")
+print("=" * 72)
+print(sensitivity_note)
+if failed_amps:
+    print("Failed amplitudes/stages:")
+    for entry in failed_amps:
+        print(f"  amp={entry['amp']} stage=D{entry['stage']}: {entry['error']}")
 
-x     = np.arange(len(amps))
-width = 0.35
+json_payload = {
+    "amplitudes": AMPLITUDES,
+    "stim_neurons": STIM_NEURONS,
+    "optimal_amp": best["amp"],
+    "sensitivity_note": sensitivity_note,
+    "all_silent_at_0_2": all_silent_at_floor,
+    "failures": failed_amps,
+    "results": results,
+}
+json_path = OUT_SWEEP / "sweep_results.json"
+json_path.write_text(json.dumps(json_payload, indent=2), encoding="utf-8")
 
+x = np.arange(len(results))
+width = 0.36
 fig, ax = plt.subplots(figsize=(10, 5))
-bars1 = ax.bar(x - width/2, d1s, width, label="D1 (hatchling, 0h)", color="#4A90D9", alpha=0.85)
-bars2 = ax.bar(x + width/2, d8s, width, label="D8 (adult, 120h)",  color="#E8694A", alpha=0.85)
-
-ax.set_xlabel("Stimulation amplitude (pA)", fontsize=12)
-ax.set_ylabel("% neurons fired (Vmax > -20 mV)", fontsize=12)
-ax.set_title("c302 Parameters C0 — Amplitude Sweep: D1 vs D8 Network Activation",
-             fontsize=12, fontweight="bold")
+ax.bar(x - width / 2, [row["n_d1"] for row in results], width, label="D1", color="#2f6db0")
+ax.bar(x + width / 2, [row["n_d8"] for row in results], width, label="D8", color="#d45b3f")
 ax.set_xticks(x)
-ax.set_xticklabels([f"{a}pA" for a in amps])
-ax.legend(fontsize=11)
-ax.axhline(30, color="gray", ls="--", lw=1, alpha=0.5, label="30% target floor")
-ax.axhline(70, color="gray", ls=":",  lw=1, alpha=0.5)
-ax.set_ylim(0, 105)
+ax.set_xticklabels([f"{row['amp']}" for row in results])
+ax.set_xlabel("Amplitude (pA)")
+ax.set_ylabel("Fired neurons")
+ax.set_title("Task A amplitude sweep: D1 vs D8 fired neurons")
+ax.legend()
+for index, row in enumerate(results):
+    ax.text(index - width / 2, row["n_d1"] + 1, str(row["n_d1"]), ha="center", va="bottom", fontsize=8)
+    ax.text(index + width / 2, row["n_d8"] + 1, str(row["n_d8"]), ha="center", va="bottom", fontsize=8)
+fig.tight_layout()
+plot_path = OUT_SWEEP / "sweep_plot.png"
+fig.savefig(plot_path, dpi=140)
+plt.close(fig)
 
-# Annotate sensitivity window
-for r, xi in zip(results, x):
-    ax.text(xi - width/2, d1s[results.index(r)] + 1.5, f"{r['fired_d1']}", ha="center",
-            fontsize=8, color="#4A90D9")
-    ax.text(xi + width/2, d8s[results.index(r)] + 1.5, f"{r['fired_d8']}", ha="center",
-            fontsize=8, color="#E8694A")
-
-plt.tight_layout()
-fig.savefig(os.path.join(OUT_SWEEP, "sweep_plot.png"), dpi=130, bbox_inches="tight")
-plt.close()
-print(f"  Saved sweep_plot.png")
-
-print(f"\n=== TASK A COMPLETE ===")
-print(f"  Optimal amplitude: {best['amp']} pA")
-print(f"  Results in: {OUT_SWEEP}")
+print(f"Saved {json_path}")
+print(f"Saved {plot_path}")
+print("=== TASK A COMPLETE ===")
+print(f"Optimal amplitude: {best['amp']} pA")
