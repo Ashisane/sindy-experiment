@@ -1,0 +1,184 @@
+{
+  "metadata": {
+    "c302_version": "0.12.0",
+    "parameters": "C0_GradedSynapse2",
+    "connectivity_stage": "Witvliet_D8",
+    "stimulation_amplitude_pA": 2.0,
+    "stimulation_duration_ms": 200.0,
+    "stimulation_delay_ms": 50.0,
+    "simulation_duration_ms": 500.0,
+    "threshold_mV": -50.0,
+    "requested_circuit_neurons": [
+      "ALML",
+      "ALMR",
+      "PVML",
+      "PVMR",
+      "PVM",
+      "AVM",
+      "AVAL",
+      "AVAR",
+      "AVDL",
+      "AVDR",
+      "AVBL",
+      "AVBR",
+      "PVCL",
+      "PVCR"
+    ],
+    "circuit_neurons": [
+      "ALML",
+      "ALMR",
+      "AVM",
+      "AVAL",
+      "AVAR",
+      "AVDL",
+      "AVDR",
+      "AVBL",
+      "AVBR",
+      "PVCL",
+      "PVCR"
+    ],
+    "absent_requested_neurons": [
+      "PVML",
+      "PVMR",
+      "PVM"
+    ],
+    "metric3_definition": "mean peak depolarization above prestimulus baseline in backward command neurons divided by the same quantity in forward command neurons",
+    "metric4_definition": "bilateral symmetry index computed on peak depolarization above prestimulus baseline"
+  },
+  "perturbations": {
+    "P1_baseline": {
+      "stimulated": [
+        "ALML",
+        "ALMR"
+      ],
+      "lesioned": [],
+      "circuit_neurons_used": [
+        "ALML",
+        "ALMR",
+        "AVAL",
+        "AVAR",
+        "AVBL",
+        "AVBR",
+        "AVDL",
+        "AVDR",
+        "AVM",
+        "PVCL",
+        "PVCR"
+      ],
+      "metric1_peak_voltage": {
+        "ALML": -14.5529,
+        "ALMR": -19.2521,
+        "AVAL": -8.6002,
+        "AVAR": -8.6002,
+        "AVBL": -6.4195,
+        "AVBR": -6.4195,
+        "AVDL": -8.6084,
+        "AVDR": -7.1823,
+        "AVM": -15.0976,
+        "PVCL": -10.2965,
+        "PVCR": -7.5767
+      },
+      "metric2_activation_depth": 1.0,
+      "metric2_activation_depth_count": "11/11",
+      "metric3_backward_forward_ratio": 0.986194,
+      "metric3_backward_mean_delta_mV": 40.620621,
+      "metric3_forward_mean_delta_mV": 41.189285,
+      "metric4_bilateral_symmetry": {
+        "AVAL_AVAR": 1e-05,
+        "AVBL_AVBR": 9e-06,
+        "PVCL_PVCR": 0.06573,
+        "mean": 0.021916
+      },
+      "raw_traces_available": true
+    },
+    "P2_AVAL_lesion": {
+      "stimulated": [
+        "ALML",
+        "ALMR"
+      ],
+      "lesioned": [
+        "AVAL"
+      ],
+      "circuit_neurons_used": [
+        "ALML",
+        "ALMR",
+        "AVAR",
+        "AVBL",
+        "AVBR",
+        "AVDL",
+        "AVDR",
+        "AVM",
+        "PVCL",
+        "PVCR"
+      ],
+      "metric1_peak_voltage": {
+        "ALML": -14.5529,
+        "ALMR": -19.2521,
+        "AVAR": -8.6002,
+        "AVBL": -6.4195,
+        "AVBR": -6.4195,
+        "AVDL": -8.6084,
+        "AVDR": -7.1823,
+        "AVM": -15.0976,
+        "PVCL": -10.2965,
+        "PVCR": -7.5767
+      },
+      "metric2_activation_depth": 1.0,
+      "metric2_activation_depth_count": "10/10",
+      "metric3_backward_forward_ratio": 0.989015,
+      "metric3_backward_mean_delta_mV": 40.736831,
+      "metric3_forward_mean_delta_mV": 41.189285,
+      "metric4_bilateral_symmetry": {
+        "AVAL_AVAR": null,
+        "AVBL_AVBR": 9e-06,
+        "PVCL_PVCR": 0.06573,
+        "mean": 0.032869
+      },
+      "raw_traces_available": true
+    },
+    "P3_unilateral_touch": {
+      "stimulated": [
+        "ALML"
+      ],
+      "lesioned": [],
+      "circuit_neurons_used": [
+        "ALML",
+        "ALMR",
+        "AVAL",
+        "AVAR",
+        "AVBL",
+        "AVBR",
+        "AVDL",
+        "AVDR",
+        "AVM",
+        "PVCL",
+        "PVCR"
+      ],
+      "metric1_peak_voltage": {
+        "ALML": -23.6257,
+        "ALMR": -37.2911,
+        "AVAL": -41.2338,
+        "AVAR": -41.2336,
+        "AVBL": -38.7371,
+        "AVBR": -38.7369,
+        "AVDL": -38.8581,
+        "AVDR": -30.9739,
+        "AVM": -31.6203,
+        "PVCL": -31.8161,
+        "PVCR": -38.3298
+      },
+      "metric2_activation_depth": 1.0,
+      "metric2_activation_depth_count": "11/11",
+      "metric3_backward_forward_ratio": 0.902291,
+      "metric3_backward_mean_delta_mV": 10.793514,
+      "metric3_forward_mean_delta_mV": 11.962343,
+      "metric4_bilateral_symmetry": {
+        "AVAL_AVAR": 3.7e-05,
+        "AVBL_AVBR": 2e-05,
+        "PVCL_PVCR": 0.382253,
+        "mean": 0.127437
+      },
+      "raw_traces_available": true
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "P1_baseline": {
+    "0": "ALML",
+    "1": "ALMR",
+    "2": "AVAL",
+    "3": "AVAR",
+    "4": "AVBL",
+    "5": "AVBR",
+    "6": "AVDL",
+    "7": "AVDR",
+    "8": "AVM",
+    "9": "PVCL",
+    "10": "PVCR"
+  },
+  "P2_AVAL_lesion": {
+    "0": "ALML",
+    "1": "ALMR",
+    "2": "AVAR",
+    "3": "AVBL",
+    "4": "AVBR",
+    "5": "AVDL",
+    "6": "AVDR",
+    "7": "AVM",
+    "8": "PVCL",
+    "9": "PVCR"
+  },
+  "P3_unilateral_touch": {
+    "0": "ALML",
+    "1": "ALMR",
+    "2": "AVAL",
+    "3": "AVAR",
+    "4": "AVBL",
+    "5": "AVBR",
+    "6": "AVDL",
+    "7": "AVDR",
+    "8": "AVM",
+    "9": "PVCL",
+    "10": "PVCR"
+  }
+}
