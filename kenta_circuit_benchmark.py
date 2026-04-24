@@ -26,17 +26,20 @@ TRACE_FILES = {
     "P1_baseline": MDG_BUILD / "traces_P1_baseline.npy",
     "P2_AVAL_lesion": MDG_BUILD / "traces_P2_AVAL_lesion.npy",
     "P3_unilateral_touch": MDG_BUILD / "traces_P3_unilateral.npy",
+    "P1_low": MDG_BUILD / "traces_P1_low.npy",
+    "P2_low": MDG_BUILD / "traces_P2_low.npy",
+    "P3_low": MDG_BUILD / "traces_P3_low.npy",
 }
 NEURON_INDEX_JSON = MDG_BUILD / "neuron_index.json"
 REPORT_MD = MDG_BUILD / "KENTA_BENCHMARK_REPORT.md"
 
 STAGE = 8
-AMPLITUDE_PA = 2.0
+STANDARD_AMPLITUDE_PA = 2.0
+LOW_AMPLITUDE_PA = 0.5
 STIM_DELAY_MS = 50.0
 STIM_DURATION_MS = 200.0
 SIM_DURATION_MS = 500.0
 DT_MS = 0.05
-ACTIVATION_THRESHOLD_MV = -50.0
 
 REQUESTED_CIRCUIT = [
     "ALML",
@@ -62,16 +65,37 @@ PERTURBATIONS = {
         "net_id": "KENTA_P1_baseline",
         "stimulated": ["ALML", "ALMR"],
         "lesioned": [],
+        "amplitude_pA": STANDARD_AMPLITUDE_PA,
     },
     "P2_AVAL_lesion": {
         "net_id": "KENTA_P2_AVAL_lesion",
         "stimulated": ["ALML", "ALMR"],
         "lesioned": ["AVAL"],
+        "amplitude_pA": STANDARD_AMPLITUDE_PA,
     },
     "P3_unilateral_touch": {
         "net_id": "KENTA_P3_unilateral",
         "stimulated": ["ALML"],
         "lesioned": [],
+        "amplitude_pA": STANDARD_AMPLITUDE_PA,
+    },
+    "P1_low": {
+        "net_id": "KENTA_P1_low",
+        "stimulated": ["ALML", "ALMR"],
+        "lesioned": [],
+        "amplitude_pA": LOW_AMPLITUDE_PA,
+    },
+    "P2_low": {
+        "net_id": "KENTA_P2_low",
+        "stimulated": ["ALML", "ALMR"],
+        "lesioned": ["AVAL"],
+        "amplitude_pA": LOW_AMPLITUDE_PA,
+    },
+    "P3_low": {
+        "net_id": "KENTA_P3_low",
+        "stimulated": ["ALML"],
+        "lesioned": [],
+        "amplitude_pA": LOW_AMPLITUDE_PA,
     },
 }
 
@@ -136,7 +160,13 @@ def run_lems(lems_path: Path, target_directory: Path) -> bool:
         )
 
 
-def run_perturbation(label: str, present_circuit: list[str], stimulated: list[str], lesioned: list[str]) -> dict[str, Any]:
+def run_perturbation(
+    label: str,
+    present_circuit: list[str],
+    stimulated: list[str],
+    lesioned: list[str],
+    amplitude_pa: float,
+) -> dict[str, Any]:
     import c302
 
     perturb_dir = ensure_directory(OUTPUT_DIR / label)
@@ -147,7 +177,7 @@ def run_perturbation(label: str, present_circuit: list[str], stimulated: list[st
         raise ValueError(f"Stimulated neurons missing from circuit: {missing_stim}")
 
     import_kenta_reader(lesioned)
-    c302_module, params = configure_params(AMPLITUDE_PA)
+    c302_module, params = configure_params(amplitude_pa)
     c302_module.generate(
         net_id,
         params,
@@ -182,10 +212,18 @@ def run_perturbation(label: str, present_circuit: list[str], stimulated: list[st
     baseline_mv = traces_mv[baseline_mask, :].mean(axis=0)
     peak_mv = traces_mv.max(axis=0)
     peak_delta_mv = peak_mv - baseline_mv
+    percent_depolarization = np.divide(
+        peak_delta_mv,
+        -baseline_mv,
+        out=np.zeros_like(peak_delta_mv),
+        where=np.abs(baseline_mv) > 1e-9,
+    ) * 100.0
 
     peak_dict = {name: round(float(value), 4) for name, value in zip(neuron_order, peak_mv)}
-    activated_count = int((peak_mv > ACTIVATION_THRESHOLD_MV).sum())
-    activation_depth = round(activated_count / len(neuron_order), 6)
+    metric2_per_neuron = {
+        name: round(float(value), 4) for name, value in zip(neuron_order, percent_depolarization)
+    }
+    mean_percent_depolarization = round(float(np.mean(percent_depolarization)), 6)
 
     name_to_peak_delta = {name: float(value) for name, value in zip(neuron_order, peak_delta_mv)}
     backward_available = [name for name in BACKWARD_NEURONS if name in name_to_peak_delta]
@@ -214,14 +252,15 @@ def run_perturbation(label: str, present_circuit: list[str], stimulated: list[st
 
     return {
         "label": label,
+        "amplitude_pA": amplitude_pa,
         "stimulated": stimulated,
         "lesioned": lesioned,
         "circuit_neurons_used": neuron_order,
         "time_ms": time_ms,
         "traces_mv": traces_mv,
         "peak_dict": peak_dict,
-        "activated_count": activated_count,
-        "activation_depth": activation_depth,
+        "metric2_per_neuron_percent_depolarization": metric2_per_neuron,
+        "mean_percent_depolarization": mean_percent_depolarization,
         "backward_mean_delta_mV": round(backward_mean, 6) if not np.isnan(backward_mean) else None,
         "forward_mean_delta_mV": round(forward_mean, 6) if not np.isnan(forward_mean) else None,
         "backward_forward_ratio": backward_forward_ratio,
@@ -234,6 +273,9 @@ def build_report(metadata: dict[str, Any], perturbations: dict[str, dict[str, An
     p1 = perturbations["P1_baseline"]
     p2 = perturbations["P2_AVAL_lesion"]
     p3 = perturbations["P3_unilateral_touch"]
+    p1_low = perturbations["P1_low"]
+    p2_low = perturbations["P2_low"]
+    p3_low = perturbations["P3_low"]
 
     def fmt(value):
         if value is None:
@@ -245,17 +287,29 @@ def build_report(metadata: dict[str, Any], perturbations: dict[str, dict[str, An
     p1_ratio = p1["metric3_backward_forward_ratio"]
     p2_ratio = p2["metric3_backward_forward_ratio"]
     p3_ratio = p3["metric3_backward_forward_ratio"]
+    p1_low_ratio = p1_low["metric3_backward_forward_ratio"]
+    p2_low_ratio = p2_low["metric3_backward_forward_ratio"]
+    p3_low_ratio = p3_low["metric3_backward_forward_ratio"]
     lesion_delta = None if p1_ratio is None or p2_ratio is None else p2_ratio - p1_ratio
     avar_baseline = p1["metric1_peak_voltage"].get("AVAR")
     avar_lesion = p2["metric1_peak_voltage"].get("AVAR")
     avar_change = None if avar_baseline is None or avar_lesion is None else avar_lesion - avar_baseline
     p1_sym = p1["metric4_bilateral_symmetry"].get("mean")
     p3_sym = p3["metric4_bilateral_symmetry"].get("mean")
+    p1_low_sym = p1_low["metric4_bilateral_symmetry"].get("mean")
+    p3_low_sym = p3_low["metric4_bilateral_symmetry"].get("mean")
     asymmetry_increase = None if p1_sym is None or p3_sym is None else p3_sym - p1_sym
+    low_asymmetry_increase = None if p1_low_sym is None or p3_low_sym is None else p3_low_sym - p1_low_sym
     strongest_p3_pair = None
     valid_p3_pairs = {k: v for k, v in p3["metric4_bilateral_symmetry"].items() if k != "mean" and v is not None}
     if valid_p3_pairs:
         strongest_p3_pair = max(valid_p3_pairs.items(), key=lambda item: item[1])
+    strongest_p3_low_pair = None
+    valid_p3_low_pairs = {
+        k: v for k, v in p3_low["metric4_bilateral_symmetry"].items() if k != "mean" and v is not None
+    }
+    if valid_p3_low_pairs:
+        strongest_p3_low_pair = max(valid_p3_low_pairs.items(), key=lambda item: item[1])
 
     lines = [
         "# KENTA Benchmark Report",
@@ -269,14 +323,14 @@ def build_report(metadata: dict[str, Any], perturbations: dict[str, dict[str, An
         "",
         "## 2. Results table",
         "",
-        "| Metric | P1 baseline | P2 AVAL lesion | P3 unilateral touch |",
-        "|---|---|---|---|",
-        f"| Metric 1 summary: mean circuit peak voltage (mV) | {fmt(np.mean(list(p1['metric1_peak_voltage'].values())))} | {fmt(np.mean(list(p2['metric1_peak_voltage'].values())))} | {fmt(np.mean(list(p3['metric1_peak_voltage'].values())))} |",
-        f"| Metric 2: activation depth | {fmt(p1['metric2_activation_depth'])} ({p1['metric2_activation_depth_count']}) | {fmt(p2['metric2_activation_depth'])} ({p2['metric2_activation_depth_count']}) | {fmt(p3['metric2_activation_depth'])} ({p3['metric2_activation_depth_count']}) |",
-        f"| Metric 3: backward / forward ratio | {fmt(p1['metric3_backward_forward_ratio'])} | {fmt(p2['metric3_backward_forward_ratio'])} | {fmt(p3['metric3_backward_forward_ratio'])} |",
-        f"| Metric 4: mean bilateral symmetry index | {fmt(p1['metric4_bilateral_symmetry'].get('mean'))} | {fmt(p2['metric4_bilateral_symmetry'].get('mean'))} | {fmt(p3['metric4_bilateral_symmetry'].get('mean'))} |",
+        "| Metric | P1 baseline (2.0 pA) | P2 AVAL lesion (2.0 pA) | P3 unilateral touch (2.0 pA) | P1 low (0.5 pA) | P2 low (0.5 pA) | P3 low (0.5 pA) |",
+        "|---|---|---|---|---|---|---|",
+        f"| Metric 1 summary: mean circuit peak voltage (mV) | {fmt(np.mean(list(p1['metric1_peak_voltage'].values())))} | {fmt(np.mean(list(p2['metric1_peak_voltage'].values())))} | {fmt(np.mean(list(p3['metric1_peak_voltage'].values())))} | {fmt(np.mean(list(p1_low['metric1_peak_voltage'].values())))} | {fmt(np.mean(list(p2_low['metric1_peak_voltage'].values())))} | {fmt(np.mean(list(p3_low['metric1_peak_voltage'].values())))} |",
+        f"| Metric 2: mean percent depolarization | {fmt(p1['metric2_mean_percent_depolarization'])} | {fmt(p2['metric2_mean_percent_depolarization'])} | {fmt(p3['metric2_mean_percent_depolarization'])} | {fmt(p1_low['metric2_mean_percent_depolarization'])} | {fmt(p2_low['metric2_mean_percent_depolarization'])} | {fmt(p3_low['metric2_mean_percent_depolarization'])} |",
+        f"| Metric 3: backward / forward ratio | {fmt(p1['metric3_backward_forward_ratio'])} | {fmt(p2['metric3_backward_forward_ratio'])} | {fmt(p3['metric3_backward_forward_ratio'])} | {fmt(p1_low['metric3_backward_forward_ratio'])} | {fmt(p2_low['metric3_backward_forward_ratio'])} | {fmt(p3_low['metric3_backward_forward_ratio'])} |",
+        f"| Metric 4: mean bilateral symmetry index | {fmt(p1['metric4_bilateral_symmetry'].get('mean'))} | {fmt(p2['metric4_bilateral_symmetry'].get('mean'))} | {fmt(p3['metric4_bilateral_symmetry'].get('mean'))} | {fmt(p1_low['metric4_bilateral_symmetry'].get('mean'))} | {fmt(p2_low['metric4_bilateral_symmetry'].get('mean'))} | {fmt(p3_low['metric4_bilateral_symmetry'].get('mean'))} |",
         "",
-        "Full Metric 1 peak-voltage dictionaries are stored in benchmark_results.json for KENTA comparison.",
+        "Full Metric 1 peak-voltage dictionaries and per-neuron Metric 2 percent-depolarization values are stored in benchmark_results.json for KENTA comparison.",
         "",
         "## 3. P1 biological validation",
         "",
@@ -289,6 +343,14 @@ def build_report(metadata: dict[str, Any], perturbations: dict[str, dict[str, An
         lines.append(
             f"P1 does not pass the anterior-touch sanity check cleanly: backward / forward = {fmt(p1_ratio)}. This suggests the result is either too parameter-sensitive or the reduced sub-circuit omits compensating structural context that exists in the full connectome."
         )
+    if p1_low_ratio is not None and p1_low_ratio > 1.0:
+        lines.append(
+            f"At 0.5 pA, P1_low does pass the same check with backward / forward = {p1_low_ratio:.4f} > 1, which makes the lower-amplitude regime more biologically plausible for KENTA comparison."
+        )
+    else:
+        lines.append(
+            f"At 0.5 pA, P1_low still does not show backward dominance cleanly: backward / forward = {fmt(p1_low_ratio)}."
+        )
 
     lines.extend([
         "",
@@ -296,6 +358,7 @@ def build_report(metadata: dict[str, Any], perturbations: dict[str, dict[str, An
         "",
         f"The AVAL lesion changes Metric 3 by {fmt(lesion_delta)} relative to baseline.",
         f"AVAR peak voltage changes by {fmt(avar_change)} mV relative to baseline.",
+        f"At 0.5 pA, Metric 3 changes from {fmt(p1_low_ratio)} in P1_low to {fmt(p2_low_ratio)} in P2_low.",
     ])
     if avar_change is not None and avar_change > 0:
         lines.append("AVAR increases after the lesion, which is consistent with partial compensation through the remaining bilateral pathway.")
@@ -307,13 +370,20 @@ def build_report(metadata: dict[str, Any], perturbations: dict[str, dict[str, An
         "## 5. P3 asymmetry",
         "",
         f"Mean bilateral symmetry index changes by {fmt(asymmetry_increase)} from P1 to P3.",
+        f"At 0.5 pA, mean bilateral symmetry index changes by {fmt(low_asymmetry_increase)} from P1_low to P3_low.",
     ])
     if strongest_p3_pair is not None:
         lines.append(f"The strongest bilateral asymmetry in P3 is {strongest_p3_pair[0]} = {strongest_p3_pair[1]:.4f}.")
+    if strongest_p3_low_pair is not None:
+        lines.append(f"At 0.5 pA, the strongest bilateral asymmetry in P3_low is {strongest_p3_low_pair[0]} = {strongest_p3_low_pair[1]:.4f}.")
     if p1_sym is not None and p3_sym is not None and p3_sym > p1_sym:
         lines.append("P3 is more asymmetric than P1, so unilateral sensory drive is preserved functionally in the benchmark output.")
     else:
         lines.append("P3 does not increase asymmetry over P1, so the current c302 setup is washing out the expected lateralized response.")
+    if p1_low_sym is not None and p3_low_sym is not None and p3_low_sym > p1_low_sym:
+        lines.append("At 0.5 pA, unilateral touch also increases asymmetry over bilateral touch.")
+    else:
+        lines.append("At 0.5 pA, unilateral touch does not increase asymmetry over bilateral touch, so the lower-amplitude regime improves the command ratio but weakens the lateralization signature.")
 
     lines.extend([
         "",
@@ -324,6 +394,7 @@ def build_report(metadata: dict[str, Any], perturbations: dict[str, dict[str, An
         "- Gap junctions are included, but the benchmark does not distinguish their uncertainty from chemical synapse uncertainty.",
         "- c302 does not model neuropeptide modulation.",
         "- The stimulus is artificial current injection, not mechanosensory transduction.",
+        "- Activation depth metric (Metric 2) should be interpreted with caution in graded-synapse models — the -50 mV threshold is reached by most neurons even at low stimulation amplitudes. The KENTA collaborator should compare raw peak voltages (Metric 1) and bilateral symmetry (Metric 4) as the primary comparison targets.",
         "",
         "## 7. Scientific interpretation for the collaboration",
         "",
@@ -359,16 +430,18 @@ def main():
             present_circuit=present_circuit,
             stimulated=config["stimulated"],
             lesioned=config["lesioned"],
+            amplitude_pa=config["amplitude_pA"],
         )
         np.save(TRACE_FILES[label], result["traces_mv"])
         neuron_index[label] = {str(idx): name for idx, name in enumerate(result["circuit_neurons_used"])}
         perturbation_results[label] = {
+            "amplitude_pA": config["amplitude_pA"],
             "stimulated": config["stimulated"],
             "lesioned": config["lesioned"],
             "circuit_neurons_used": result["circuit_neurons_used"],
             "metric1_peak_voltage": result["peak_dict"],
-            "metric2_activation_depth": result["activation_depth"],
-            "metric2_activation_depth_count": f"{result['activated_count']}/{len(result['circuit_neurons_used'])}",
+            "metric2_mean_percent_depolarization": result["mean_percent_depolarization"],
+            "metric2_per_neuron_percent_depolarization": result["metric2_per_neuron_percent_depolarization"],
             "metric3_backward_forward_ratio": result["backward_forward_ratio"],
             "metric3_backward_mean_delta_mV": result["backward_mean_delta_mV"],
             "metric3_forward_mean_delta_mV": result["forward_mean_delta_mV"],
@@ -376,7 +449,7 @@ def main():
             "raw_traces_available": True,
         }
         print(
-            f"  activation depth = {perturbation_results[label]['metric2_activation_depth_count']} | "
+            f"  mean percent depolarization = {perturbation_results[label]['metric2_mean_percent_depolarization']} | "
             f"ratio = {perturbation_results[label]['metric3_backward_forward_ratio']} | "
             f"mean symmetry = {perturbation_results[label]['metric4_bilateral_symmetry'].get('mean')}"
         )
@@ -385,21 +458,21 @@ def main():
         "c302_version": c302_version,
         "parameters": "C0_GradedSynapse2",
         "connectivity_stage": "Witvliet_D8",
-        "stimulation_amplitude_pA": AMPLITUDE_PA,
+        "stimulation_amplitudes_pA": [STANDARD_AMPLITUDE_PA, LOW_AMPLITUDE_PA],
         "stimulation_duration_ms": STIM_DURATION_MS,
         "stimulation_delay_ms": STIM_DELAY_MS,
         "simulation_duration_ms": SIM_DURATION_MS,
-        "threshold_mV": ACTIVATION_THRESHOLD_MV,
         "requested_circuit_neurons": REQUESTED_CIRCUIT,
         "circuit_neurons": present_circuit,
         "absent_requested_neurons": absent_circuit,
+        "metric2_definition": "mean percent depolarization across circuit neurons, computed as ((peak voltage - prestimulus resting voltage) / (0 - prestimulus resting voltage)) * 100",
         "metric3_definition": "mean peak depolarization above prestimulus baseline in backward command neurons divided by the same quantity in forward command neurons",
         "metric4_definition": "bilateral symmetry index computed on peak depolarization above prestimulus baseline",
     }
     benchmark_payload = {"metadata": metadata, "perturbations": perturbation_results}
     BENCHMARK_JSON.write_text(json.dumps(benchmark_payload, indent=2), encoding="utf-8")
     NEURON_INDEX_JSON.write_text(json.dumps(neuron_index, indent=2), encoding="utf-8")
-    REPORT_MD.write_text(build_report(metadata, perturbation_results), encoding="utf-8")
+    REPORT_MD.write_text(build_report(metadata, perturbation_results), encoding="utf-8-sig")
 
     print("=" * 72)
     print(f"Saved {BENCHMARK_JSON}")
